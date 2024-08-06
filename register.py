@@ -24,7 +24,7 @@ def register_ANTs_anat_to_template(input_brain, input_head, input_mask, referenc
     params = cfg['registration_workflows']['anatomical_registration']['registration']['ANTs']['T1_registration']
     interpolation = cfg['registration_workflows']['anatomical_registration']['registration']['ANTs']['interpolation']
 
-    ants_rc, outputs = ANTs_registration_connector(
+    outputs = ANTs_registration_connector(
         f"ANTS_T1_to_template_{pipe_num}", cfg, params, orig="T1w"
     )
 
@@ -39,7 +39,7 @@ def register_ANTs_anat_to_template(input_brain, input_head, input_mask, referenc
         "from-template_to-longitudinal_mode-image_xfm": f"{output_prefix}_inverse_composite_xfm.nii.gz"
     }
 
-    return output_paths
+    return outputs
 
 def mask_longitudinal_T1w_brain(brain_template, pipe_num, opt=None):
     """
@@ -68,7 +68,7 @@ def mask_longitudinal_T1w_brain(brain_template, pipe_num, opt=None):
         "fslmaths", input_file, "-bin", output_file
     ]
 
-    subprocess.run(fslmaths_cmd, check=True)
+    run_command(fslmaths_cmd)
 
     # Output dictionary
     outputs = {"space-longitudinal_desc-brain_mask": output_file}
@@ -180,7 +180,7 @@ def apply_transforms(input_image, reference_image, output_image, transforms, int
         transform_cmd += ['--invert-transform-flags'] + ['1'] * len(transforms)
 
     transform_cmd += ['-n', interpolation]
-    result = subprocess.run(transform_cmd, capture_output=True, text=True)
+    run_command(transform_cmd)
 
     if result.returncode != 0:
         raise RuntimeError(f"Error applying transforms: {result.stderr}")
@@ -923,3 +923,490 @@ def generate_inverse_transform_flags(transform_list):
         if "InverseWarp" in transform:
             inverse_transform_flags.append(False)
     return inverse_transform_flags
+
+@nodeblock(
+    name="register_FSL_anat_to_template",
+    config=["registration_workflows", "anatomical_registration"],
+    switch=["run"],
+    option_key=["registration", "using"],
+    option_val=["FSL", "FSL-linear"],
+    inputs=[
+        (
+            ["desc-preproc_T1w", "space-longitudinal_desc-reorient_T1w"],
+            ["desc-brain_T1w", "space-longitudinal_desc-preproc_T1w"],
+        ),
+        "T1w-template",
+        "T1w-brain-template",
+        "FNIRT-T1w-template",
+        "FNIRT-T1w-brain-template",
+        "template-ref-mask",
+    ],
+    outputs={
+        "space-template_desc-preproc_T1w": {"Template": "T1w-brain-template"},
+        "space-template_desc-head_T1w": {"Template": "T1w-template"},
+        "space-template_desc-T1w_mask": {"Template": "T1w-template"},
+        "space-template_desc-T1wT2w_biasfield": {"Template": "T1w-template"},
+        "from-T1w_to-template_mode-image_desc-linear_xfm": {"Template": "T1w-template"},
+        "from-template_to-T1w_mode-image_desc-linear_xfm": {"Template": "T1w-template"},
+        "from-T1w_to-template_mode-image_xfm": {"Template": "T1w-template"},
+        "from-T1w_to-template_mode-image_warp": {"Template": "T1w-template"},
+        "from-longitudinal_to-template_mode-image_desc-linear_xfm": {
+            "Template": "T1w-template"
+        },
+        "from-template_to-longitudinal_mode-image_desc-linear_xfm": {
+            "Template": "T1w-template"
+        },
+        "from-longitudinal_to-template_mode-image_xfm": {"Template": "T1w-template"},
+    },
+)
+def register_FSL_anat_to_template(cfg, strat_pool, pipe_num, space_longitudinal_desc_reorient_T1w, space_longitudinal_desc_preproc_T1w, opt=None):
+    """Register T1w to template with FSL."""
+    
+    # Create output directory
+    output_dir = os.path.join(os.getcwd(), f"register_{opt}_anat_to_template_{pipe_num}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get interpolation and FNIRT config from config
+    interpolation = cfg['registration_workflows']['anatomical_registration']['registration']['FSL-FNIRT']['interpolation']
+    fnirt_config = cfg['registration_workflows']['anatomical_registration']['registration']['FSL-FNIRT']['fnirt_config']
+    
+    # Get data from strat_pool
+    input_brain = strat_pool.get_data(['desc-brain_T1w', 'space-longitudinal_desc-preproc_T1w'])
+    input_head = strat_pool.get_data(['desc-preproc_T1w', 'space-longitudinal_desc-reorient_T1w'])
+    reference_mask = strat_pool.get_data('template-ref-mask')
+    
+    if cfg['registration_workflows']['anatomical_registration']['registration']['FSL-FNIRT']['ref_resolution'] == cfg['registration_workflows']['anatomical_registration']['resolution_for_anat']:
+        reference_brain = strat_pool.get_data('T1w-brain-template')
+        reference_head = strat_pool.get_data('T1w-template')
+    else:
+        reference_brain = strat_pool.get_data('FNIRT-T1w-brain-template')
+        reference_head = strat_pool.get_data('FNIRT-T1w-template')
+    
+    # Call the FSL registration function
+    outputs = create_fsl_fnirt_nonlinear_reg_nhp(
+        input_brain=input_brain,
+        input_skull=input_head,
+        reference_brain=reference_brain,
+        reference_skull=reference_head,
+        interp=interpolation,
+        ref_mask=reference_mask,
+        linear_aff="linear_aff.mat",  # Example affine file
+        fnirt_config=fnirt_config
+    )
+    
+    if "space-longitudinal" in input_brain:
+        replace_outputs = {}
+        for key in outputs.keys():
+            if "from-T1w" in key:
+                new_key = key.replace("from-T1w", "from-longitudinal")
+                replace_outputs[key] = new_key
+            if "to-T1w" in key:
+                new_key = key.replace("to-T1w", "to-longitudinal")
+                replace_outputs[key] = new_key
+        for key in replace_outputs:
+            tmp = outputs[key]
+            outputs[replace_outputs[key]] = tmp
+            del outputs[key]
+    
+    return outputs
+
+
+def FSL_registration_connector(input_brain, reference_brain, input_head, reference_head, input_mask, reference_mask, transform, interpolation, fnirt_config, wf_name, cfg, orig="T1w", opt=None, symmetric=False, template="T1w"):
+    """Transform raw data to template with FSL."""
+    
+    sym = "sym" if symmetric else ""
+    symm = "_symmetric" if symmetric else ""
+    tmpl = "EPI" if template == "EPI" else ""
+
+    outputs = {}
+
+    if opt in ("FSL", "FSL-linear"):
+        # Linear registration with FLIRT
+        #linear_xfm = os.path.join(os.getcwd(), f"{wf_name}_linear.mat")
+        #output_brain = os.path.join(os.getcwd(), f"{wf_name}_brain.nii.gz")
+
+        flirt_outputs = create_fsl_flirt_linear_reg(input_brain, reference_brain, interpolation, f"anat_mni_flirt_register{symm}")
+        
+        reference_brain_out = reference_brain
+        lin_xfm_out = flirt_outputs["linear_xfm"]
+        invlin_xfm_out = flirt_outputs["invlinear_xfm"]
+        
+        write_lin_composite_xfm = os.path.join(os.getcwd(), f"fsl_lin-warp_to_nii{symm}.nii.gz")
+        write_invlin_composite_xfm = os.path.join(os.getcwd(), f"fsl_invlin-warp_to_nii{symm}.nii.gz")
+        
+        # ConvertWarp commands
+        run_command([
+            'convertwarp', '--ref', reference_brain_out, '--premat', lin_xfm_out,
+            '--out', write_lin_composite_xfm
+        ])
+        
+        run_command([
+            'convertwarp', '--ref', reference_brain_out, '--premat', invlin_xfm_out,
+            '--out', write_invlin_composite_xfm
+        ])
+        
+        outputs.update({
+            f"space-{sym}template_desc-preproc_{orig}": flirt_outputs["output_brain"],
+            f"from-{orig}_to-{sym}{tmpl}template_mode-image_desc-linear_xfm": write_lin_composite_xfm,
+            f"from-{sym}{tmpl}template_to-{orig}_mode-image_desc-linear_xfm": write_invlin_composite_xfm,
+            f"from-{orig}_to-{sym}{tmpl}template_mode-image_xfm": write_lin_composite_xfm
+        })
+
+    if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
+            == cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
+            fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg(f"anat_mni_fnirt_register{symm}")
+        else:
+            fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg_nhp(f"anat_mni_fnirt_register{symm}")
+        
+        # FNIRT commands
+        fnirt_out_brain = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_output_brain.nii.gz")
+        fnirt_out_warp = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_warpcoef.nii.gz")
+        fnirt_out_image = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_warped.nii.gz")
+        
+        run_command([
+            'fnirt', '--in', input_brain, '--aff', lin_xfm_out, '--cout', fnirt_out_warp,
+            '--config', fnirt_config, '--ref', reference_brain, '--refmask', reference_mask,
+            '--iout', fnirt_out_image
+        ])
+        
+        added_outputs = {
+            f"space-{sym}template_desc-preproc_{orig}": fnirt_out_brain,
+            f"from-{orig}_to-{sym}{tmpl}template_mode-image_xfm": fnirt_out_warp
+        }
+        
+        if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
+            != cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
+            added_outputs.update({
+                f"space-{sym}template_desc-head_{orig}": fnirt_out_brain,  # assuming a head output is also generated
+                f"space-{sym}template_desc-{orig}_mask": reference_mask,  # similarly assuming a mask output
+                f"space-{sym}template_desc-T1wT2w_biasfield": reference_mask,  # and a biasfield
+                f"from-{orig}_to-{sym}{tmpl}template_mode-image_warp": fnirt_out_warp
+            })
+        
+        outputs.update(added_outputs)
+
+    return outputs
+
+    return (wf, outputs)
+
+def create_fsl_flirt_linear_reg(input_brain, reference_brain, interp, ref_mask=None, name="fsl_flirt_linear_reg"):
+    """Create a FLIRT registration process."""
+    
+    output_brain = os.path.join(os.getcwd(), f"{name}_output_brain.nii.gz")
+    linear_xfm = os.path.join(os.getcwd(), f"{name}_linear.mat")
+    invlinear_xfm = os.path.join(os.getcwd(), f"{name}_invlinear.mat")
+    
+    flirt(input_brain, reference_brain, interp, linear_xfm, output_brain)
+    
+    convertxfm(linear_xfm, invlinear_xfm)
+    
+    outputs = {
+        "output_brain": output_brain,
+        "linear_xfm": linear_xfm,
+        "invlinear_xfm": invlinear_xfm
+    }
+    
+    return outputs
+
+def flirt(input_brain, reference_brain, interp, output_matrix, output_image):
+    """Perform FSL FLIRT registration."""
+    cmd = [
+        'flirt', '-in', input_brain, '-ref', reference_brain, '-out', output_image,
+        '-omat', output_matrix, '-interp', interp
+    ]
+    run_command(cmd)
+
+def run_command(cmd):
+    """Run a shell command and handle errors."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Command failed with error: {result.stderr}")
+    return result.stdout
+
+def fnirt(input_skull, reference_skull, affine_file, ref_mask, fnirt_config, fieldcoeff_file, jacobian_file):
+    """Perform FSL FNIRT non-linear registration."""
+    cmd = [
+        'fnirt', '--in', input_skull, '--ref', reference_skull, '--aff', affine_file,
+        '--refmask', ref_mask, '--config', fnirt_config, '--fout', fieldcoeff_file,
+        '--jout', jacobian_file
+    ]
+    run_command(cmd)
+
+def applywarp(input_brain, reference_brain, fieldcoeff_file, output_brain, interp):
+    """Apply a warp using FSL ApplyWarp."""
+    cmd = [
+        'applywarp', '--in', input_brain, '--ref', reference_brain, '--warp', fieldcoeff_file,
+        '--out', output_brain, '--interp', interp
+    ]
+    run_command(cmd)
+
+def create_fsl_fnirt_nonlinear_reg(input_brain, input_skull, reference_brain, reference_skull, interp, ref_mask, linear_aff, fnirt_config, name="fsl_fnirt_nonlinear_reg"):
+    
+    """Perform non-linear registration of an input to a reference using FSL FNIRT."""
+    fieldcoeff_file = os.path.join(os.getcwd(), f"{name}_fieldcoeff.nii.gz")
+    jacobian_file = os.path.join(os.getcwd(), f"{name}_jacobian.nii.gz")
+    output_brain = os.path.join(os.getcwd(), f"{name}_output_brain.nii.gz")
+
+    fnirt(input_skull, reference_skull, linear_aff, ref_mask, fnirt_config, fieldcoeff_file, jacobian_file)
+    applywarp(input_brain, reference_brain, fieldcoeff_file, output_brain, interp)
+
+    outputs = {
+        "output_brain": output_brain,
+        "nonlinear_xfm": fieldcoeff_file
+    }
+    
+    return outputs
+
+def create_fsl_fnirt_nonlinear_reg_nhp(input_brain, input_skull, reference_brain, reference_skull, interp, ref_mask, linear_aff, fnirt_config, name="fsl_fnirt_nonlinear_reg_nhp"):
+    
+    """Perform non-linear registration of an input to a reference using FSL FNIRT."""
+    fieldcoeff_file = os.path.join(os.getcwd(), f"{name}_fieldcoeff.nii.gz")
+    jacobian_file = os.path.join(os.getcwd(), f"{name}_jacobian.nii.gz")
+    field_file = os.path.join(os.getcwd(), f"{name}_field.nii.gz")
+    output_brain = os.path.join(os.getcwd(), f"{name}_output_brain.nii.gz")
+    output_head = os.path.join(os.getcwd(), f"{name}_output_head.nii.gz")
+    output_mask = os.path.join(os.getcwd(), f"{name}_output_mask.nii.gz")
+    output_biasfield = os.path.join(os.getcwd(), f"{name}_output_biasfield.nii.gz")
+
+    fnirt(input_skull, reference_skull, linear_aff, ref_mask, fnirt_config, fieldcoeff_file, jacobian_file, field_file)
+
+    applywarp(input_brain, reference_skull, field_file, output_brain, interp="nn", relwarp=True)
+    applywarp(input_skull, reference_skull, field_file, output_head, interp="spline", relwarp=True)
+    applywarp(input_brain, reference_skull, field_file, output_mask, interp="nn", relwarp=True)
+    applywarp(input_brain, reference_skull, field_file, output_biasfield, interp="spline", relwarp=True)
+
+    outputs = {
+        "output_brain": output_brain,
+        "output_head": output_head,
+        "output_mask": output_mask,
+        "output_biasfield": output_biasfield,
+        "nonlinear_xfm": fieldcoeff_file,
+        "nonlinear_warp": field_file
+    }
+
+    return outputs
+
+def overwrite_transform_anat_to_template(cfg, strat_pool, pipe_num, opt=None):
+    """Overwrite ANTs transforms with FSL transforms."""
+    
+    xfm_prov = strat_pool.get_cpac_provenance("from-T1w_to-template_mode-image_xfm")
+
+    reg_tool = check_prov_for_regtool(xfm_prov)
+
+    if opt.lower() == "fsl" and reg_tool.lower() == "ants":
+        # Apply head-to-head transforms on brain using ABCD-style registration
+        # Convert ANTs warps to FSL warps to be consistent with the functional registration
+
+        input_brain = strat_pool.get_data(["desc-restore_T1w", "desc-preproc_T1w"])
+        reference_image = strat_pool.get_data("T1w-template")
+        transforms = strat_pool.get_data("from-T1w_to-template_mode-image_xfm")
+        input_image = strat_pool.get_data("desc-preproc_T1w")
+
+        # Create output directory
+        output_dir = os.path.join(os.getcwd(), f"overwrite_transform_anat_to_template_{pipe_num}")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # ANTs apply transforms T1 to template
+        ants_apply_warp_t1_to_template = os.path.join(output_dir, "ANTs_CombinedWarp.nii.gz")
+        cmd1 = [
+            "antsApplyTransforms", "-d", "3", "-i", input_brain, "-r", reference_image,
+            "-t", transforms, "-o", f"[{ants_apply_warp_t1_to_template},1]"
+        ]
+        run_command(cmd1)
+        
+        # ANTs apply transforms template to T1
+        ants_apply_warp_template_to_t1 = os.path.join(output_dir, "ANTs_CombinedInvWarp.nii.gz")
+        cmd2 = [
+            "antsApplyTransforms", "-d", "3", "-i", input_image, "-r", reference_image,
+            "-t", transforms, "-o", f"[{ants_apply_warp_template_to_t1},1]"
+        ]
+        run_command(cmd2)
+
+        # Split combined warp and inverse warp using c4d
+        
+        combined_warp_outputs = run_c4d(ants_apply_warp_t1_to_template, "e")
+        combined_inv_warp_outputs = run_c4d(ants_apply_warp_template_to_t1, "einv")
+
+        # Change sign of second component using fslmaths
+        def change_sign(input_file, output_file):
+            cmd4 = ["fslmaths", input_file, "-mul", "-1", output_file]
+            run_command(cmd4)
+        
+        change_sign(combined_warp_outputs[1], f"{output_dir}/e-2.nii.gz")
+        change_sign(combined_inv_warp_outputs[1], f"{output_dir}/e-2inv.nii.gz")
+
+        # Merge transformations using fslmerge
+        def fslmerge(inputs, output):
+            cmd5 = ["fslmerge", "-t", output] + inputs
+            run_command(cmd5)
+
+        merged_xfms = os.path.join(output_dir, "merged_xfms.nii.gz")
+        merged_inv_xfms = os.path.join(output_dir, "merged_inv_xfms.nii.gz")
+
+        fslmerge([combined_warp_outputs[0], f"{output_dir}/e-2.nii.gz", combined_warp_outputs[2]], merged_xfms)
+        fslmerge([combined_inv_warp_outputs[0], f"{output_dir}/e-2inv.nii.gz", combined_inv_warp_outputs[2]], merged_inv_xfms)
+
+        # Apply FSL warp T1 to template
+        output_t1w_image_restore = os.path.join(output_dir, "OutputT1wImageRestore.nii.gz")
+        cmd6 = [
+            "applywarp", "--rel", "--interp=spline", "-i", input_brain, "-r", reference_image,
+            "-w", merged_xfms, "-o", output_t1w_image_restore
+        ]
+        run_command(cmd6)
+
+        # Apply FSL warp T1 brain to template
+        output_t1w_image_restore_brain = os.path.join(output_dir, "OutputT1wImageRestoreBrain.nii.gz")
+        cmd7 = [
+            "applywarp", "--rel", "--interp=nn", "-i", input_image, "-r", reference_image,
+            "-w", merged_xfms, "-o", output_t1w_image_restore_brain
+        ]
+        run_command(cmd7)
+
+        # Apply FSL warp T1 brain mask to template
+        brain_mask = strat_pool.get_data("space-T1w_desc-brain_mask")
+        output_t1w_brain_mask_to_template = os.path.join(output_dir, "OutputT1wBrainMaskToTemplate.nii.gz")
+        cmd8 = [
+            "applywarp", "--rel", "--interp=nn", "-i", brain_mask, "-r", reference_image,
+            "-w", merged_xfms, "-o", output_t1w_brain_mask_to_template
+        ]
+        run_command(cmd8)
+
+        # Apply mask
+        apply_mask_output = os.path.join(output_dir, "ApplyMaskOutput.nii.gz")
+        cmd9 = [
+            "fslmaths", output_t1w_image_restore, "-mas", output_t1w_image_restore_brain, apply_mask_output
+        ]
+        run_command(cmd9)
+
+        outputs = {
+            "space-template_desc-preproc_T1w": apply_mask_output,
+            "space-template_desc-head_T1w": output_t1w_image_restore,
+            "space-template_desc-T1w_mask": output_t1w_brain_mask_to_template,
+            "from-T1w_to-template_mode-image_xfm": merged_xfms,
+            "from-template_to-T1w_mode-image_xfm": merged_inv_xfms,
+        }
+
+        return outputs
+
+def run_c4d(input_name, output_name):
+    """Run c4d to split a 4D image into 3D images."""
+    import os
+
+    output1 = os.path.join(os.getcwd(), output_name + "1.nii.gz")
+    output2 = os.path.join(os.getcwd(), output_name + "2.nii.gz")
+    output3 = os.path.join(os.getcwd(), output_name + "3.nii.gz")
+
+    cmd = f"c4d -mcs {input_name} -oo {output1} {output2} {output3}"
+    os.system(cmd)
+
+    return output1, output2, output3
+
+def register_symmetric_ANTs_anat_to_template(cfg, strat_pool, pipe_num, opt=None):
+    
+    """Register T1 to symmetric template with ANTs."""
+    params = cfg["registration_workflows"]["anatomical_registration"]["registration"]["ANTs"]["T1_registration"]
+    interpolation = cfg["registration_workflows"]["anatomical_registration"]["registration"]["ANTs"]["interpolation"]
+
+    # File paths
+    input_brain = strat_pool.get_data(["desc-preproc_T1w", "space-longitudinal_desc-preproc_T1w"])
+    reference_brain = strat_pool.get_data("T1w-brain-template-symmetric")
+    input_head = strat_pool.get_data(["desc-head_T1w", "desc-preproc_T1w", "space-longitudinal_desc-reorient_T1w"])
+    reference_head = strat_pool.get_data("T1w-template-symmetric")
+    input_mask = strat_pool.get_data(["space-T1w_desc-brain_mask", "space-longitudinal_desc-brain_mask"])
+    reference_mask = strat_pool.get_data("dilated-symmetric-brain-mask")
+    lesion_mask = strat_pool.get_data("label-lesion_mask") if strat_pool.check_rpool("label-lesion_mask") else None
+    
+    # Output paths
+    output_dir = f"ANTS_T1_to_template_symmetric_{pipe_num}"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Build the ANTs registration command
+    command = (
+        f"antsRegistration "
+        f"-d 3 "
+        f"-r [ {reference_brain} , {input_brain} , 1 ] "
+        f"-m MI[ {reference_brain} , {input_brain} , 1 , 32 ] "
+        f"-t SyN[ 0.1, 3, 0 ] "
+        f"-c [ 100x70x50x20, 1e-8, 10 ] "
+        f"-s 4x2x1x0 "
+        f"-f 8x4x2x1 "
+        f"-u 1 "
+        f"-z 1 "
+        f"-o [ {output_dir}/transform_, {output_dir}/output.nii.gz ] "
+        f"-x {input_mask} "
+        f"-v"
+    )
+
+    # Run the ANTs registration
+    run_command(command)
+    
+    # Handle output renaming if necessary
+    outputs = {
+        "space-symtemplate_desc-preproc_T1w": f"{output_dir}/output.nii.gz",
+        "from-T1w_to-symtemplate_mode-image_desc-linear_xfm": f"{output_dir}/transform_0GenericAffine.mat",
+        "from-symtemplate_to-T1w_mode-image_desc-linear_xfm": f"{output_dir}/transform_0GenericAffine.mat",
+        "from-T1w_to-symtemplate_mode-image_desc-nonlinear_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-symtemplate_to-T1w_mode-image_desc-nonlinear_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-T1w_to-symtemplate_mode-image_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-symtemplate_to-T1w_mode-image_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-longitudinal_to-symtemplate_mode-image_desc-linear_xfm": f"{output_dir}/transform_0GenericAffine.mat",
+        "from-symtemplate_to-longitudinal_mode-image_desc-linear_xfm": f"{output_dir}/transform_0GenericAffine.mat",
+        "from-longitudinal_to-symtemplate_mode-image_desc-nonlinear_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-symtemplate_to-longitudinal_mode-image_desc-nonlinear_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-longitudinal_to-symtemplate_mode-image_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+        "from-symtemplate_to-longitudinal_mode-image_xfm": f"{output_dir}/transform_1Warp.nii.gz",
+    }
+
+    return outputs
+
+def register_symmetric_FSL_anat_to_template(cfg, strat_pool, pipe_num, opt=None):
+    """Register T1w to symmetric template with FSL."""
+    # Get FSL parameters
+    interpolation = cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["interpolation"]
+    fnirt_config = cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["fnirt_config"]
+
+    # File paths
+    input_brain = strat_pool.get_data(["desc-brain_T1w", "space-longitudinal_desc-preproc_T1w"])
+    reference_brain = strat_pool.get_data("T1w-brain-template-symmetric")
+    input_head = strat_pool.get_data(["desc-preproc_T1w", "space-longitudinal_desc-reorient_T1w"])
+    reference_head = strat_pool.get_data("T1w-template-symmetric")
+    reference_mask = strat_pool.get_data("dilated-symmetric-brain-mask")
+
+    # Output directory and files
+    output_dir = f"register_{opt}_anat_to_template_symmetric_{pipe_num}"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Build the FSL registration command
+    command = (
+        f"fnirt --in={input_brain} "
+        f"--ref={reference_brain} "
+        f"--iout={output_dir}/output.nii.gz "
+        f"--fout={output_dir}/transform.nii.gz "
+        f"--aff={output_dir}/affine.mat "
+        f"--config={fnirt_config} "
+        f"--warpres=10,10,10 "
+        f"--refmask={reference_mask} "
+        f"--cout={output_dir}/coef.nii.gz "
+        f"--reffwhm=8 "
+        f"--refwarp={output_dir}/refwarp.nii.gz "
+        f"--refhead={reference_head} "
+        f"--interp={interpolation}"
+    )
+
+    # Run the FSL registration
+    run_command(command)
+    
+    # Handle output renaming if necessary
+    outputs = {
+        "space-symtemplate_desc-preproc_T1w": f"{output_dir}/output.nii.gz",
+        "from-T1w_to-symtemplate_mode-image_desc-linear_xfm": f"{output_dir}/affine.mat",
+        "from-symtemplate_to-T1w_mode-image_desc-linear_xfm": f"{output_dir}/affine.mat",
+        "from-T1w_to-symtemplate_mode-image_xfm": f"{output_dir}/transform.nii.gz",
+        "from-longitudinal_to-symtemplate_mode-image_desc-linear_xfm": f"{output_dir}/affine.mat",
+        "from-symtemplate_to-longitudinal_mode-image_desc-linear_xfm": f"{output_dir}/affine.mat",
+        "from-longitudinal_to-symtemplate_mode-image_xfm": f"{output_dir}/transform.nii.gz",
+    }
+
+    return outputs
