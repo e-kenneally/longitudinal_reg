@@ -1,6 +1,7 @@
 import os
 import warnings
 import numpy as np
+import nibabel as nib
 import subprocess
 from collections import Counter
 from multiprocessing.dummy import Pool as ThreadPool
@@ -304,7 +305,7 @@ def template_creation_flirt(
         convergence_threshold = np.finfo(np.float64).eps
 
     if len(input_brain_list) == 1 or len(input_skull_list) == 1:
-        IFLOGGER.warning(
+        print(
             "input_brain_list or input_skull_list contains only 1 image, "
             "no need to calculate template"
         )
@@ -618,3 +619,167 @@ def register_img_list(
         pool.join()
 
     return out_list
+
+def run_command(cmd):
+    """Run a shell command and handle errors."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Command failed with error: {result.stderr}")
+    return result.stdout
+
+def apply_transform(name, reg_tool, time_series=False, num_cpus=1, num_ants_cores=1):
+    """
+    Function to set up the command for applying transformations.
+    """
+    def apply_xfm(input_image, reference, transform, interpolation):
+        output_image = f"{name}_warped.nii.gz"
+        if reg_tool == "ants":
+            command = (
+                f"antsApplyTransforms -d 3 -i {input_image} -r {reference} "
+                f"-t {transform} -o {output_image} --interpolation {interpolation}"
+            )
+        elif reg_tool == "fsl":
+            command = (
+                f"applywarp --ref={reference} --in={input_image} --out={output_image} "
+                f"--warp={transform} --interp={interpolation}"
+            )
+        run_command(command)
+        return output_image
+
+    return apply_xfm
+
+def warp_longitudinal_T1w_to_template(cfg, strat_pool, pipe_num):
+    """
+    Warp longitudinal T1w image to a template using either ANTs or FSL based on
+    the registration tool used.
+
+    Parameters
+    ----------
+    cfg : dict
+        Configuration dictionary containing pipeline setup information.
+    strat_pool : object
+        Strategy pool containing data and methods for retrieving relevant data.
+    pipe_num : int
+        Pipeline number for naming purposes.
+
+    Returns
+    -------
+    output : dict
+        Dictionary containing paths to the warped T1w image in template space.
+    """
+
+    # Determine the registration tool based on provenance
+    xfm_prov = strat_pool.get_cpac_provenance(
+        "from-longitudinal_to-template_mode-image_xfm"
+    )
+    reg_tool = check_prov_for_regtool(xfm_prov)
+
+    num_cpus = cfg["pipeline_setup"]["system_config"]["max_cores_per_participant"]
+    num_ants_cores = cfg["pipeline_setup"]["system_config"]["num_ants_threads"]
+
+    # Get interpolation setting based on the registration tool
+    if reg_tool == "ants":
+        interpolation = cfg["registration_workflows"][
+            "anatomical_registration"
+        ]["registration"]["ANTs"]["interpolation"]
+    elif reg_tool == "fsl":
+        interpolation = cfg["registration_workflows"][
+            "anatomical_registration"
+        ]["registration"]["FSL-FNIRT"]["interpolation"]
+
+    # Get the necessary inputs from the strat_pool
+    input_image, _ = strat_pool.get_data("space-longitudinal_desc-brain_T1w")
+    reference, _ = strat_pool.get_data("T1w_brain_template")
+    transform, _ = strat_pool.get_data("from-longitudinal_to-template_mode-image_xfm")
+
+    # Apply the transformation using the appropriate tool and settings
+    apply_xfm_func = apply_transform(
+        f"warp_longitudinal_to_T1template_{pipe_num}",
+        reg_tool,
+        time_series=False,
+        num_cpus=num_cpus,
+        num_ants_cores=num_ants_cores,
+    )
+
+    output_image = apply_xfm_func(input_image, reference, transform, interpolation)
+
+    # Return the output path
+    outputs = {"space-template_desc-brain_T1w": output_image}
+
+    return outputs
+
+def warp_longitudinal_seg_to_T1w(cfg, strat_pool, pipe_num):
+    """
+    Warp longitudinal segmentation masks and probability maps to T1w space using
+    either ANTs or FSL based on the registration tool used.
+
+    Parameters
+    ----------
+    cfg : dict
+        Configuration dictionary containing pipeline setup information.
+    strat_pool : object
+        Strategy pool containing data and methods for retrieving relevant data.
+    pipe_num : int
+        Pipeline number for naming purposes.
+
+    Returns
+    -------
+    output : dict
+        Dictionary containing paths to the warped segmentation masks and probability maps in T1w space.
+    """
+
+    # Determine the registration tool based on provenance
+    xfm_prov = strat_pool.get_cpac_provenance(
+        "from-longitudinal_to-T1w_mode-image_desc-linear_xfm"
+    )
+    reg_tool = check_prov_for_regtool(xfm_prov)
+
+    num_cpus = cfg["pipeline_setup"]["system_config"]["max_cores_per_participant"]
+    num_ants_cores = cfg["pipeline_setup"]["system_config"]["num_ants_threads"]
+
+    # Get interpolation setting based on the registration tool
+    if reg_tool == "ants":
+        interpolation = cfg["registration_workflows"][
+            "anatomical_registration"
+        ]["registration"]["ANTs"]["interpolation"]
+    elif reg_tool == "fsl":
+        interpolation = cfg["registration_workflows"][
+            "anatomical_registration"
+        ]["registration"]["FSL-FNIRT"]["interpolation"]
+
+    # Labels to process
+    labels = [
+        "CSF_mask",
+        "CSF_desc-preproc_mask",
+        "CSF_probseg",
+        "GM_mask",
+        "GM_desc-preproc_mask",
+        "GM_probseg",
+        "WM_mask",
+        "WM_desc-preproc_mask",
+        "WM_probseg",
+    ]
+
+    outputs = {}
+
+    for label in labels:
+        # Get the necessary inputs from the strat_pool
+        input_image, _ = strat_pool.get_data(f"space-longitudinal_label-{label}")
+        reference, _ = strat_pool.get_data("T1w_brain_template")
+        transform, _ = strat_pool.get_data("from-longitudinal_to-T1w_mode-image_desc-linear_xfm")
+
+        # Apply the transformation using the appropriate tool and settings
+        apply_xfm_func = apply_transform(
+            f"warp_longitudinal_seg_to_T1w_{label}_{pipe_num}",
+            reg_tool,
+            time_series=False,
+            num_cpus=num_cpus,
+            num_ants_cores=num_ants_cores,
+        )
+
+        output_image = apply_xfm_func(input_image, reference, transform, interpolation)
+
+        # Store the output path
+        outputs[f"label-{label}"] = output_image
+
+    return outputs
