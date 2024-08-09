@@ -1,7 +1,10 @@
 import subprocess
+import os
+from longitudinal_reg.longitudinal_utils import run_command
+from longitudinal_reg.lesion import create_lesion_preproc
 
-def register_ANTs_anat_to_template(input_brain, input_head, input_mask, reference_brain, reference_head,
-    reference_mask, lesion_mask, opt=None):
+def register_ANTs_anat_to_template(cfg, input_brain, input_head, input_mask, reference_brain, reference_head,
+    reference_mask, lesion_mask):
     """
     Register T1w to template with ANTs.
 
@@ -25,7 +28,8 @@ def register_ANTs_anat_to_template(input_brain, input_head, input_mask, referenc
     interpolation = cfg['registration_workflows']['anatomical_registration']['registration']['ANTs']['interpolation']
 
     outputs = ANTs_registration_connector(
-        f"ANTS_T1_to_template_{pipe_num}", cfg, params, orig="T1w"
+        cfg, params, input_brain, reference_brain, input_head, reference_head, input_mask, reference_mask, 
+        lesion_mask, interpolation, orig="T1w"
     )
 
     # Set output paths
@@ -76,12 +80,10 @@ def mask_longitudinal_T1w_brain(brain_template, pipe_num, opt=None):
     return outputs
 
 
-#TODO- create lesion preproc
-
 def ANTs_registration_connector(
-    cfg, params, orig="T1w", symmetric=False, template="T1w",
-    input_brain, reference_brain, input_head, reference_head, input_mask, reference_mask, 
-    transform, interpolation
+    cfg, params, input_brain, reference_brain, input_head, reference_head, input_mask, reference_mask, 
+    lesion_mask, interpolation, orig="T1w", symmetric=False, template="T1w",
+    
 ):
     """Transform raw data to template with ANTs."""
 
@@ -91,7 +93,7 @@ def ANTs_registration_connector(
             " anatomical registration method.\nHowever, no ANTs parameters were"
             " specified.\nPlease specify ANTs parameters properly and try again."
         )
-        raise RequiredFieldInvalid(err_msg)
+        raise Exception(err_msg)
 
     sym = "sym" if symmetric else ""
     symm = "_symmetric" if symmetric else ""
@@ -99,8 +101,7 @@ def ANTs_registration_connector(
 
 
     if cfg.registration_workflows["anatomical_registration"]["registration"]["ANTs"]["use_lesion_mask"]:
-        lesion_preproc = create_lesion_preproc(wf_name=f"lesion_preproc{symm}")
-        fixed_image_mask = create_lesion_preproc()
+        fixed_image_mask = create_lesion_preproc(lesion_mask)
     else:
         fixed_image_mask = None
 
@@ -109,12 +110,12 @@ def ANTs_registration_connector(
         reg_ants_skull=cfg["registration_workflows"]["anatomical_registration"][
         "reg_with_skull"], 
         moving_brain=input_brain, 
-        reference_brain, 
+        reference_brain=reference_brain, 
         moving_skull=input_head, 
         reference_skull=reference_head, 
-        reference_mask,
+        reference_mask=reference_mask,
         moving_mask=input_mask, 
-        fixed_image_mask,
+        fixed_image_mask=fixed_image_mask,
         ants_para=params, 
         interp=interpolation,
     )
@@ -182,10 +183,16 @@ def apply_transforms(input_image, reference_image, output_image, transforms, int
     transform_cmd += ['-n', interpolation]
     run_command(transform_cmd)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Error applying transforms: {result.stderr}")
-    else:
-        print(f"Transform applied successfully: {result.stdout}")
+def separate_warps_list(warp_list, selection):
+    """Select the warp from the warp list."""
+    selected_warp = None
+    for warp in warp_list:
+        if selection == "Warp":
+            if "3Warp" in warp or "2Warp" in warp or "1Warp" in warp:
+                selected_warp = warp
+        elif selection in warp:
+            selected_warp = warp
+    return selected_warp
 
 def create_wf_calculate_ants_warp(
         moving_brain,
@@ -336,7 +343,7 @@ def create_wf_calculate_ants_warp(
     warp_list, warped_image = hardcoded_reg(
         moving_brain,
         moving_skull,
-        reference_skull,
+        input_reference_skull,
         ants_para,
         moving_mask,
         reference_mask,
@@ -349,15 +356,12 @@ def create_wf_calculate_ants_warp(
         throttle=True)
     
     #TODO: threads
-
-    def select_warp(warp_list, selection):
-        return seperate_warps_list(warp_list, selection)
     
-    ants_initial_xfm = select_warp(warp_list, "Initial")
-    ants_rigid_xfm = select_warp(warp_list, "Rigid")
-    ants_affine_xfm = select_warp(warp_list, "Affine")
-    warp_field = select_warp(warp_list, "Warp")
-    inverse_warp_field = select_warp(warp_list, "Inverse")
+    ants_initial_xfm = separate_warps_list(warp_list, "Initial")
+    ants_rigid_xfm = separate_warps_list(warp_list, "Rigid")
+    ants_affine_xfm = separate_warps_list(warp_list, "Affine")
+    warp_field = separate_warps_list(warp_list, "Warp")
+    inverse_warp_field = separate_warps_list(warp_list, "Inverse")
 
     
     return (ants_initial_xfm,
@@ -368,17 +372,6 @@ def create_wf_calculate_ants_warp(
         composite_transform,
         wait,
         normalized_output_brain)
-
-def seperate_warps_list(warp_list, selection):
-    """Select the warp from the warp list."""
-    selected_warp = None
-    for warp in warp_list:
-        if selection == "Warp":
-            if "3Warp" in warp or "2Warp" in warp or "1Warp" in warp:
-                selected_warp = warp
-        elif selection in warp:
-            selected_warp = warp
-    return selected_warp
 
 def hardcoded_reg(
     moving_brain,
@@ -450,7 +443,7 @@ def hardcoded_reg(
                         "Please specifiy lowerQuantile and upperQuantile of ANTs"
                         " parameters --winsorize-image-intensities in pipeline config."
                     )
-                    raise RequiredFieldInvalid(err_msg)
+                    raise Exception(err_msg)
                 regcmd.append("--winsorize-image-intensities")
                 _quantile = ants_para[para_index][para_type]
                 regcmd.append(
@@ -463,7 +456,7 @@ def hardcoded_reg(
                         "Please specifiy initializationFeature of ANTs parameters in"
                         " pipeline config."
                     )
-                    raise RequiredFieldInvalid(err_msg)
+                    raise Exception(err_msg)
                 regcmd.append("--initial-moving-transform")
                 initialization_feature = ants_para[para_index][para_type][
                     "initializationFeature"
@@ -492,7 +485,7 @@ def hardcoded_reg(
                                     f"Please specifiy {trans_type} Gradient Step of"
                                     " ANTs parameters in pipeline config."
                                 )
-                                raise RequiredFieldInvalid(err_msg)
+                                raise Exception(err_msg)
                             gradient_step = ants_para[para_index][para_type][
                                 trans_index
                             ][trans_type]["gradientStep"]
@@ -506,7 +499,7 @@ def hardcoded_reg(
                                 is None
                             ):
                                 err_msg = f"Please specifiy {trans_type} Gradient Step of ANTs parameters in pipeline config."
-                                raise RequiredFieldInvalid(err_msg)
+                                raise Exception(err_msg)
                             SyN_para = []
                             SyN_para.append(
                                 str(
@@ -564,7 +557,7 @@ def hardcoded_reg(
                                     "Please specifiy metricWeight and numberOfBins for"
                                     " metric MI of ANTs parameters in pipeline config."
                                 )
-                                raise RequiredFieldInvalid(err_msg)
+                                raise Exception(err_msg)
                             MI_para = []
                             _metric = ants_para[para_index][para_type][trans_index][
                                 trans_type
@@ -634,7 +627,7 @@ def hardcoded_reg(
                                     "Please specifiy metricWeight and radius for metric"
                                     " CC of ANTs parameters in pipeline config."
                                 )
-                                raise RequiredFieldInvalid(err_msg)
+                                raise Exception(err_msg)
                             CC_para = []
                             _metric = ants_para[para_index][para_type][trans_index][
                                 trans_type
@@ -694,7 +687,7 @@ def hardcoded_reg(
                                     "Please specifiy convergence iteration of ANTs"
                                     " parameters in pipeline config."
                                 )
-                                raise RequiredFieldInvalid(err_msg)
+                                raise Exception(err_msg)
                             convergence_para.append(
                                 str(
                                     ants_para[para_index][para_type][trans_index][
@@ -924,41 +917,6 @@ def generate_inverse_transform_flags(transform_list):
             inverse_transform_flags.append(False)
     return inverse_transform_flags
 
-@nodeblock(
-    name="register_FSL_anat_to_template",
-    config=["registration_workflows", "anatomical_registration"],
-    switch=["run"],
-    option_key=["registration", "using"],
-    option_val=["FSL", "FSL-linear"],
-    inputs=[
-        (
-            ["desc-preproc_T1w", "space-longitudinal_desc-reorient_T1w"],
-            ["desc-brain_T1w", "space-longitudinal_desc-preproc_T1w"],
-        ),
-        "T1w-template",
-        "T1w-brain-template",
-        "FNIRT-T1w-template",
-        "FNIRT-T1w-brain-template",
-        "template-ref-mask",
-    ],
-    outputs={
-        "space-template_desc-preproc_T1w": {"Template": "T1w-brain-template"},
-        "space-template_desc-head_T1w": {"Template": "T1w-template"},
-        "space-template_desc-T1w_mask": {"Template": "T1w-template"},
-        "space-template_desc-T1wT2w_biasfield": {"Template": "T1w-template"},
-        "from-T1w_to-template_mode-image_desc-linear_xfm": {"Template": "T1w-template"},
-        "from-template_to-T1w_mode-image_desc-linear_xfm": {"Template": "T1w-template"},
-        "from-T1w_to-template_mode-image_xfm": {"Template": "T1w-template"},
-        "from-T1w_to-template_mode-image_warp": {"Template": "T1w-template"},
-        "from-longitudinal_to-template_mode-image_desc-linear_xfm": {
-            "Template": "T1w-template"
-        },
-        "from-template_to-longitudinal_mode-image_desc-linear_xfm": {
-            "Template": "T1w-template"
-        },
-        "from-longitudinal_to-template_mode-image_xfm": {"Template": "T1w-template"},
-    },
-)
 def register_FSL_anat_to_template(cfg, strat_pool, pipe_num, space_longitudinal_desc_reorient_T1w, space_longitudinal_desc_preproc_T1w, opt=None):
     """Register T1w to template with FSL."""
     
@@ -1055,39 +1013,37 @@ def FSL_registration_connector(input_brain, reference_brain, input_head, referen
     if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
             == cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
             fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg(f"anat_mni_fnirt_register{symm}")
-        else:
-            fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg_nhp(f"anat_mni_fnirt_register{symm}")
-        
-        # FNIRT commands
-        fnirt_out_brain = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_output_brain.nii.gz")
-        fnirt_out_warp = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_warpcoef.nii.gz")
-        fnirt_out_image = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_warped.nii.gz")
-        
-        run_command([
-            'fnirt', '--in', input_brain, '--aff', lin_xfm_out, '--cout', fnirt_out_warp,
-            '--config', fnirt_config, '--ref', reference_brain, '--refmask', reference_mask,
-            '--iout', fnirt_out_image
-        ])
-        
-        added_outputs = {
-            f"space-{sym}template_desc-preproc_{orig}": fnirt_out_brain,
-            f"from-{orig}_to-{sym}{tmpl}template_mode-image_xfm": fnirt_out_warp
-        }
-        
-        if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
-            != cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
-            added_outputs.update({
-                f"space-{sym}template_desc-head_{orig}": fnirt_out_brain,  # assuming a head output is also generated
-                f"space-{sym}template_desc-{orig}_mask": reference_mask,  # similarly assuming a mask output
-                f"space-{sym}template_desc-T1wT2w_biasfield": reference_mask,  # and a biasfield
-                f"from-{orig}_to-{sym}{tmpl}template_mode-image_warp": fnirt_out_warp
-            })
-        
-        outputs.update(added_outputs)
+    else:
+        fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg_nhp(f"anat_mni_fnirt_register{symm}")
+    
+    # FNIRT commands
+    fnirt_out_brain = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_output_brain.nii.gz")
+    fnirt_out_warp = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_warpcoef.nii.gz")
+    fnirt_out_image = os.path.join(os.getcwd(), f"{fnirt_reg_anat_mni}_warped.nii.gz")
+    
+    run_command([
+        'fnirt', '--in', input_brain, '--aff', lin_xfm_out, '--cout', fnirt_out_warp,
+        '--config', fnirt_config, '--ref', reference_brain, '--refmask', reference_mask,
+        '--iout', fnirt_out_image
+    ])
+    
+    added_outputs = {
+        f"space-{sym}template_desc-preproc_{orig}": fnirt_out_brain,
+        f"from-{orig}_to-{sym}{tmpl}template_mode-image_xfm": fnirt_out_warp
+    }
+    
+    if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
+        != cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
+        added_outputs.update({
+            f"space-{sym}template_desc-head_{orig}": fnirt_out_brain,  # assuming a head output is also generated
+            f"space-{sym}template_desc-{orig}_mask": reference_mask,  # similarly assuming a mask output
+            f"space-{sym}template_desc-T1wT2w_biasfield": reference_mask,  # and a biasfield
+            f"from-{orig}_to-{sym}{tmpl}template_mode-image_warp": fnirt_out_warp
+        })
+    
+    outputs.update(added_outputs)
 
     return outputs
-
-    return (wf, outputs)
 
 def create_fsl_flirt_linear_reg(input_brain, reference_brain, interp, ref_mask=None, name="fsl_flirt_linear_reg"):
     """Create a FLIRT registration process."""
@@ -1098,6 +1054,7 @@ def create_fsl_flirt_linear_reg(input_brain, reference_brain, interp, ref_mask=N
     
     flirt(input_brain, reference_brain, interp, linear_xfm, output_brain)
     
+    #make into command fsl.convertxfm
     convertxfm(linear_xfm, invlinear_xfm)
     
     outputs = {
@@ -1115,13 +1072,6 @@ def flirt(input_brain, reference_brain, interp, output_matrix, output_image):
         '-omat', output_matrix, '-interp', interp
     ]
     run_command(cmd)
-
-def run_command(cmd):
-    """Run a shell command and handle errors."""
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed with error: {result.stderr}")
-    return result.stdout
 
 def fnirt(input_skull, reference_skull, affine_file, ref_mask, fnirt_config, fieldcoeff_file, jacobian_file):
     """Perform FSL FNIRT non-linear registration."""
