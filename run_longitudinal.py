@@ -33,9 +33,7 @@ def run_workflow(config, out_dir):
     cpac_dirs = []
     sub_list = []
     cpac_dir = out_dir
-    # cpac_dir = os.path.join(
-    #         out_dir, f"pipeline_{orig_pipe_name}", subject_id, unique_id
-    #     )
+    
     cpac_dirs.append(os.path.join(cpac_dir, "anat"))
     sessions = []
 
@@ -80,8 +78,16 @@ def run_workflow(config, out_dir):
         
         #TODO - how to deal w templates?? just paths for now
         reference_head = config.registration_workflows.anatomical_registration["T1w_template"]
-        reference_mask = config.registration_workflows.anatomical_registration["T1w_brain_template_mask"]
-        reference_brain = config.registration_workflows.anatomical_registration["T1w_brain_template"]
+        reference_mask = config.registration_workflows.anatomical_registration["T1w_brain_template_mask"] if \
+            config.registration_workflows.anatomical_registration["T1w_brain_template_mask"] else None
+        reference_brain = config.registration_workflows.anatomical_registration["T1w_brain_template"] if \
+            config.registration_workflows.anatomical_registration["T1w_brain_template"] else None
+        template_ref_mask = config.registration_workflows.anatomical_registration.registration.FSL_FNIRT["ref_mask"]
+        T1w_template_symmetric = config.voxel_mirrored_homotopic_connectivity["symmetric_registration_T1w_template_symmetric"]
+
+        #TODO: symmetric templates!!!
+
+
         #rpool.get_data("T1w-brain-template-mask") if strat_pool.check_rpool("T1w-brain-template-mask") else None
         # lesion_mask = 
         #strat_pool.get_data("label-lesion_mask") if strat_pool.check_rpool("label-lesion_mask") else None
@@ -92,21 +98,24 @@ def run_workflow(config, out_dir):
             if config.registration_workflows.anatomical_registration["run"] and \
                 config.registration_workflows.anatomical_registration["using"] == "ANTS":
                 if config.voxel_mirrored_homotopic_connectivity["run"]:
-                    register_symmetric_ANTs_anat_to_template()
+                    reg_outputs = register_symmetric_ANTs_anat_to_template()
                 else:
-                    register_ANTS_anat_to_template(input_brain=brain_template, input_head=skull_template,
+                    reg_outputs = register_ANTS_anat_to_template(config, input_brain=brain_template, input_head=skull_template,
                             input_mask=longitudinal_brain_mask, reference_brain=reference_brain, 
                             reference_head=reference_head, reference_mask=reference_mask, 
-                            lesion_mask=None, opt=None)
+                            lesion_mask=None)
+            # shouldn't fsl take the longitudinal mask? what
             elif config.registration_workflows.anatomical_registration["run"] and \
                 (config.registration_workflows.anatomical_registration["using"] == "FSL" or 
                 config.registration_workflows.anatomical_registration["using"] == "FSL-linear"):
                 if config.voxel_mirrored_homotopic_connectivity["run"]:
-                    register_symmetric_FSL_anat_to_template()
+                    reg_outputs = register_symmetric_FSL_anat_to_template()
                 else:
-                    register_fsl_anat_to_template()
+                    reg_outputs = register_fsl_anat_to_template(config, skull_template, reference_head, reference_brain, template_ref_mask)
             if config.registration_workflows.anatomical_registration.overwrite_transform["run"]:
                 overwrite_transform_anat_to_template() 
+            
+            # tissue segmentation
             if config.segmentation["run"] and config.segmentation.tissue_segmentation["using"] == "FSL-FAST":
                 tissue_seg_fsl_fast()
 

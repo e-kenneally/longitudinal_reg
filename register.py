@@ -45,7 +45,7 @@ def register_ANTs_anat_to_template(cfg, input_brain, input_head, input_mask, ref
 
     return outputs
 
-def mask_longitudinal_T1w_brain(brain_template, pipe_num, opt=None):
+def mask_longitudinal_T1w_brain(brain_template, pipe_num):
     """
     Apply a binary mask to the longitudinal T1w brain image using FSL's fslmaths command.
 
@@ -55,8 +55,6 @@ def mask_longitudinal_T1w_brain(brain_template, pipe_num, opt=None):
         An object with a method get_data that returns the node and output path.
     pipe_num : int
         Pipeline number.
-    opt : optional
-        Optional parameter.
 
     Returns
     -------
