@@ -1,6 +1,8 @@
 import subprocess
 import os
 
+from longitudinal_reg.longitudinal_utils import run_command
+
 # Main function to perform FSL-FAST tissue segmentation
 def tissue_seg_fsl_fast(wf, cfg, strat_pool, pipe_num, opt=None):
     # Configuration parameters
@@ -10,11 +12,11 @@ def tissue_seg_fsl_fast(wf, cfg, strat_pool, pipe_num, opt=None):
     out_basename = "segment"
 
     # Get data from strat_pool
-    space_longitudinal_desc_preproc_T1w = 
+    space_longitudinal_desc_preproc_T1w = \
         strat_pool.get_data(["space-longitudinal_desc-preproc_T1w"], report_fetched=True)
-    space_longitudinal_desc_brain_mask = 
+    space_longitudinal_desc_brain_mask = \
         strat_pool.get_data("space-longitudinal_desc-brain_mask")
-    from_template_to_longitudinal_mode_image_desc_linear_xfm = 
+    from_template_to_longitudinal_mode_image_desc_linear_xfm = \
         strat_pool.get_data(["from-template_to-longitudinal_mode-image_desc-linear_xfm"])
     
     # Perform FSL FAST segmentation
@@ -78,29 +80,6 @@ def tissue_seg_fsl_fast(wf, cfg, strat_pool, pipe_num, opt=None):
     }
 
     return wf, outputs
-
-def check_if_file_is_empty(in_file):
-    """Raise exception if regressor fie is empty.
-
-    Parameters
-    ----------
-    in_file : nii file (string)
-        regressor file
-
-    Returns
-    -------
-    in_file : string
-        return same file
-    """
-    import numpy as np
-    import nibabel as nib
-
-    nii = nib.load(in_file)
-    data = nii.get_fdata()
-    if data.size == 0 or np.all(data == 0) or np.all(data == np.nan):
-        msg = f"File {in_file} is empty. Use a lower threshold or turn off regressors."
-        raise ValueError(msg)
-    return in_file
 
 def process_segment_map(wf_name, use_priors, use_custom_threshold, reg_tool):
     """
