@@ -915,7 +915,7 @@ def generate_inverse_transform_flags(transform_list):
             inverse_transform_flags.append(False)
     return inverse_transform_flags
 
-def register_FSL_anat_to_template(cfg, strat_pool, pipe_num, space_longitudinal_desc_reorient_T1w, space_longitudinal_desc_preproc_T1w, opt=None):
+def register_FSL_anat_to_template(cfg, strat_pool, input_brain, input_head, reference_mask):
     """Register T1w to template with FSL."""
     
     # Create output directory
@@ -926,11 +926,6 @@ def register_FSL_anat_to_template(cfg, strat_pool, pipe_num, space_longitudinal_
     interpolation = cfg['registration_workflows']['anatomical_registration']['registration']['FSL-FNIRT']['interpolation']
     fnirt_config = cfg['registration_workflows']['anatomical_registration']['registration']['FSL-FNIRT']['fnirt_config']
     
-    # Get data from strat_pool
-    input_brain = strat_pool.get_data(['desc-brain_T1w', 'space-longitudinal_desc-preproc_T1w'])
-    input_head = strat_pool.get_data(['desc-preproc_T1w', 'space-longitudinal_desc-reorient_T1w'])
-    reference_mask = strat_pool.get_data('template-ref-mask')
-    
     if cfg['registration_workflows']['anatomical_registration']['registration']['FSL-FNIRT']['ref_resolution'] == cfg['registration_workflows']['anatomical_registration']['resolution_for_anat']:
         reference_brain = strat_pool.get_data('T1w-brain-template')
         reference_head = strat_pool.get_data('T1w-template')
@@ -939,6 +934,7 @@ def register_FSL_anat_to_template(cfg, strat_pool, pipe_num, space_longitudinal_
         reference_head = strat_pool.get_data('FNIRT-T1w-template')
     
     # Call the FSL registration function
+    #TODO: linear_aff
     outputs = create_fsl_fnirt_nonlinear_reg_nhp(
         input_brain=input_brain,
         input_skull=input_head,
@@ -1052,7 +1048,7 @@ def create_fsl_flirt_linear_reg(input_brain, reference_brain, interp, ref_mask=N
     
     flirt(input_brain, reference_brain, interp, linear_xfm, output_brain)
     
-    #make into command fsl.convertxfm
+    #TODO: make into command fsl.convertxfm
     convertxfm(linear_xfm, invlinear_xfm)
     
     outputs = {
@@ -1249,27 +1245,21 @@ def run_c4d(input_name, output_name):
 
     return output1, output2, output3
 
-def register_symmetric_ANTs_anat_to_template(cfg, strat_pool, pipe_num, opt=None):
+def register_symmetric_ANTs_anat_to_template(cfg, input_brain, reference_brain, input_head, reference_head, input_mask,
+                                             reference_mask, lesion_mask=None):
     
     """Register T1 to symmetric template with ANTs."""
     params = cfg["registration_workflows"]["anatomical_registration"]["registration"]["ANTs"]["T1_registration"]
     interpolation = cfg["registration_workflows"]["anatomical_registration"]["registration"]["ANTs"]["interpolation"]
 
-    # File paths
-    input_brain = strat_pool.get_data(["desc-preproc_T1w", "space-longitudinal_desc-preproc_T1w"])
-    reference_brain = strat_pool.get_data("T1w-brain-template-symmetric")
-    input_head = strat_pool.get_data(["desc-head_T1w", "desc-preproc_T1w", "space-longitudinal_desc-reorient_T1w"])
-    reference_head = strat_pool.get_data("T1w-template-symmetric")
-    input_mask = strat_pool.get_data(["space-T1w_desc-brain_mask", "space-longitudinal_desc-brain_mask"])
-    reference_mask = strat_pool.get_data("dilated-symmetric-brain-mask")
-    lesion_mask = strat_pool.get_data("label-lesion_mask") if strat_pool.check_rpool("label-lesion_mask") else None
-    
     # Output paths
     output_dir = f"ANTS_T1_to_template_symmetric_{pipe_num}"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     # Build the ANTs registration command
+
+    #TODO: params ? interpolation??
     command = (
         f"antsRegistration "
         f"-d 3 "
@@ -1308,18 +1298,12 @@ def register_symmetric_ANTs_anat_to_template(cfg, strat_pool, pipe_num, opt=None
 
     return outputs
 
-def register_symmetric_FSL_anat_to_template(cfg, strat_pool, pipe_num, opt=None):
+def register_symmetric_FSL_anat_to_template(cfg, ):
     """Register T1w to symmetric template with FSL."""
-    # Get FSL parameters
+   
+   # Get FSL parameters
     interpolation = cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["interpolation"]
     fnirt_config = cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["fnirt_config"]
-
-    # File paths
-    input_brain = strat_pool.get_data(["desc-brain_T1w", "space-longitudinal_desc-preproc_T1w"])
-    reference_brain = strat_pool.get_data("T1w-brain-template-symmetric")
-    input_head = strat_pool.get_data(["desc-preproc_T1w", "space-longitudinal_desc-reorient_T1w"])
-    reference_head = strat_pool.get_data("T1w-template-symmetric")
-    reference_mask = strat_pool.get_data("dilated-symmetric-brain-mask")
 
     # Output directory and files
     output_dir = f"register_{opt}_anat_to_template_symmetric_{pipe_num}"

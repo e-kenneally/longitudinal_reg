@@ -28,11 +28,11 @@ from longitudinal_reg.segment import (
 
 def run_workflow(config, cpac_dir, out_dir, subject_id):
 
-
     cpac_dirs = []
     sessions = []
     cpac_dirs.append(os.path.join(cpac_dir, "anat"))
 
+    # get list of sessions
     for root, dirs, files in os.walk(cpac_dir):
         # The root is the current folder, dirs are the subfolders in the current folder
         for dir_name in dirs:
@@ -67,6 +67,10 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
 
     for strat in strats_brain_dct.keys():
 
+        # files for reference
+        # brain_template: desc-preproc_t1
+        # skull_template: desc-head_t1
+
         # This will generate the longitudinal template 
         if use_fs:
             warp_list, brain_template = fs_generate_template()
@@ -87,18 +91,17 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
                     unique_id_list=list(sessions))
 
         # TODO: does this happen in fs command? I don't think so
-        longitudinal_brain_mask = mask_longitudinal_T1w_brain(brain_template)
+        longitudinal_brain_mask = mask_longitudinal_T1w_brain(brain_template, pipe_num=subject_id)
         
-        #TODO - how to deal w templates?? 
         reference_head = config["registration_workflows"]["anatomical_registration"]["T1w_template"]
         reference_mask = config["registration_workflows"]["anatomical_registration"]["T1w_brain_template_mask"] if \
             config["registration_workflows"]["anatomical_registration"]["T1w_brain_template_mask"] else None
         reference_brain = config["registration_workflows"]["anatomical_registration"]["T1w_brain_template"] if \
             config["registration_workflows"]["anatomical_registration"]["T1w_brain_template"] else None
         template_ref_mask = config["registration_workflows"]["anatomical_registration"]["registration"]["FSL_FNIRT"]["ref_mask"]
-        T1w_template_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration_T1w_template_symmetric"]
-
-        #TODO: symmetric templates!!!
+        reference_head_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration"]["T1w_template_symmetric"]
+        brain_template_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration"]["T1w_brain_template_symmetric"]
+        reference_mask_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration"]["dilated_symmetric_brain_mask"]
 
         # lesion_mask = strat_pool.get_data("label-lesion_mask") if strat_pool.check_rpool("label-lesion_mask") else None
 
@@ -109,20 +112,27 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
             if config["registration_workflows"]["anatomical_registration"]["run"] and \
                 config["registration_workflows"]["anatomical_registration"]["using"] == "ANTS":
                 if config["voxel_mirrored_homotopic_connectivity"]["run"]:
-                    reg_outputs = register_symmetric_ANTs_anat_to_template()
-                else:
-                    reg_outputs = register_ANTs_anat_to_template(config, input_brain=brain_template, input_head=skull_template,
-                            input_mask=longitudinal_brain_mask, reference_brain=reference_brain, 
-                            reference_head=reference_head, reference_mask=reference_mask, 
-                            lesion_mask=None)
+                    symmetric_outputs = register_symmetric_ANTs_anat_to_template(config, input_brain=brain_template, 
+                                        reference_brain=brain_template_symmetric, input_head=skull_template, reference_head=reference_head_symmetric,
+                                        input_mask=longitudinal_brain_mask, reference_mask=reference_mask_symmetric,
+                                        lesion_mask=None
+                                    )
+                
+                reg_outputs = register_ANTs_anat_to_template(config, input_brain=brain_template, input_head=skull_template,
+                        input_mask=longitudinal_brain_mask, reference_brain=reference_brain, 
+                        reference_head=reference_head, reference_mask=reference_mask, 
+                        lesion_mask=None
+                    )
+            
             # shouldn't fsl take the longitudinal mask? what
+        
             elif config["registration_workflows"]["anatomical_registration"]["run"] and \
                 (config["registration_workflows"]["anatomical_registration"]["using"] == "FSL" or 
                 config["registration_workflows"]["anatomical_registration"]["using"] == "FSL-linear"):
                 if config["voxel_mirrored_homotopic_connectivity"]["run"]:
-                    reg_outputs = register_symmetric_FSL_anat_to_template()
-                else:
-                    reg_outputs = register_FSL_anat_to_template(config, skull_template, reference_head, reference_brain, template_ref_mask)
+                    symmetric_outputs = register_symmetric_FSL_anat_to_template(config, input_brain=brain_template, reference_brain=brain_template_symmetric,
+                                                                                reference_head=reference_head_symmetric, reference_mask=reference_mask_symmetric)
+                reg_outputs = register_FSL_anat_to_template(config, input_brain=brain_template, input_head=skull_template, reference_mask=template_ref_mask)
             if config["registration_workflows"]["anatomical_registration"].overwrite_transform["run"]:
                 overwrite_transform_anat_to_template() 
             
@@ -130,6 +140,7 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
             if config["segmentation"]["run"] and config["segmentation"]["tissue_segmentation"]["using"] == "FSL-FAST":
                 labels = tissue_seg_fsl_fast(config, pipe_num=session)
 
+        #TODO: symmetric
         transform = reg_outputs["from-longitudinal_to-template_mode-image_xfm"]
     
         seg_transform = reg_outputs["from-longitudinal_to-T1w_mode-image_desc-linear_xfm"]
@@ -139,6 +150,7 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
                                                                                 reference=reference_brain, transform=transform)
             label_outputs = warp_longitudinal_seg_to_T1w(config, pipe_num=session, images=labels, reference=reference_brain, transform=seg_transform)
 
+        # write out label outputs and everything else too
 
 def main():
     cfg = "/home/c-pac_user/CMI/longitudinal/config.yml"
@@ -148,8 +160,9 @@ def main():
     with open(cfg, 'r') as file:
         config = yaml.safe_load(file)
     for root, dirs, files in os.walk(cpac_dir):
+        
+        # WHOLE THING runs for each subject. might take a while SORRY
         for dir_name in dirs:
-            print('dir name', dir_name)
             full_path = os.path.join(root, dir_name)
             output_subfolder = os.path.join(out_dir, dir_name)
             os.makedirs(output_subfolder, exist_ok=True)
