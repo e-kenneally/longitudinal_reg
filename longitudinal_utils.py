@@ -1,5 +1,6 @@
 import os
 import warnings
+import six
 import numpy as np
 import nibabel as nib
 import subprocess
@@ -134,7 +135,7 @@ def template_convergence(
         msg = f"template_convergence: matrix type {mat_type} does not exist"
         raise ValueError(msg)
     distance = norm_transformations(translation, oth_transform)
-    IFLOGGER.info("distance = %s", abs(distance))
+    print("distance = %s", abs(distance))
 
     return abs(distance) <= convergence_threshold
 
@@ -475,7 +476,7 @@ def subject_specific_template(input_brain_list,
         result = template_creation_flirt(
             input_brain_list,
             input_skull_list,
-            init_reg,
+            init_reg, #TODO - what is this
             avg_method,
             dof,
             interp,
@@ -576,7 +577,7 @@ def register_img_list(
             for i, img in enumerate(input_brain_list)
         ]
 
-    def run_flirt(in_img, output_img, output_mat):
+    def run_flirt(in_img, ref_img, output_img, output_mat, cost, dof, interp):
         flirt_cmd = [
             "flirt",
             "-in", in_img,
@@ -786,3 +787,29 @@ def fs_generate_template():
     template = ""
     transforms = []
     return template, transforms 
+
+def nifti_image_input(image):
+    """
+    Test if an input is a path or a nifti.image and the image loaded through
+    nibabel
+    Parameters
+    ----------
+    image : str or nibabel.nifti1.Nifti1Image
+        path to the nifti file or the image already loaded through nibabel
+
+    Returns
+    -------
+    img : nibabel.nifti1.Nifti1Image
+        load and return the nifti image if image is a path, otherwise simply
+        return image
+    """
+    if isinstance(image, nib.nifti1.Nifti1Image):
+        img = image
+    elif isinstance(image, six.string_types):
+        if not os.path.exists(image):
+            raise ValueError(str(image) + " does not exist.")
+        else:
+            img = nib.load(image)
+    else:
+        raise TypeError("Image can be either a string or a nifti1.Nifti1Image")
+    return img
