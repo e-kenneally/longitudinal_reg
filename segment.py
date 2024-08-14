@@ -4,7 +4,7 @@ import os
 from longitudinal_reg.longitudinal_utils import run_command
 
 # Main function to perform FSL-FAST tissue segmentation
-def tissue_seg_fsl_fast(wf, cfg, strat_pool, pipe_num, opt=None):
+def tissue_seg_fsl_fast(cfg, strat_pool, pipe_num, opt=None):
     # Configuration parameters
     img_type = 1
     segments = True
@@ -79,7 +79,7 @@ def tissue_seg_fsl_fast(wf, cfg, strat_pool, pipe_num, opt=None):
         "label-WM_pveseg": f"{out_basename}_pve_2_bin"
     }
 
-    return wf, outputs
+    return outputs
 
 def process_segment_map(wf_name, use_priors, use_custom_threshold, reg_tool):
     """

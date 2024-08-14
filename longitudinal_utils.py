@@ -648,7 +648,7 @@ def apply_transform(name, reg_tool, time_series=False, num_cpus=1, num_ants_core
 
     return apply_xfm
 
-def warp_longitudinal_T1w_to_template(cfg, strat_pool, pipe_num):
+def warp_longitudinal_T1w_to_template(cfg, pipe_num, input_image, reference, ):
     """
     Warp longitudinal T1w image to a template using either ANTs or FSL based on
     the registration tool used.
@@ -708,7 +708,7 @@ def warp_longitudinal_T1w_to_template(cfg, strat_pool, pipe_num):
 
     return outputs
 
-def warp_longitudinal_seg_to_T1w(cfg, strat_pool, pipe_num):
+def warp_longitudinal_seg_to_T1w(cfg, pipe_num, images, reference, transform):
     """
     Warp longitudinal segmentation masks and probability maps to T1w space using
     either ANTs or FSL based on the registration tool used.
@@ -764,10 +764,8 @@ def warp_longitudinal_seg_to_T1w(cfg, strat_pool, pipe_num):
 
     for label in labels:
         # Get the necessary inputs from the strat_pool
-        input_image, _ = strat_pool.get_data(f"space-longitudinal_label-{label}")
-        reference, _ = strat_pool.get_data("T1w_brain_template")
-        transform, _ = strat_pool.get_data("from-longitudinal_to-T1w_mode-image_desc-linear_xfm")
-
+        input_image = images[f"space-longitudinal_label-{label}"]
+    
         # Apply the transformation using the appropriate tool and settings
         apply_xfm_func = apply_transform(
             f"warp_longitudinal_seg_to_T1w_{label}_{pipe_num}",
@@ -783,3 +781,8 @@ def warp_longitudinal_seg_to_T1w(cfg, strat_pool, pipe_num):
         outputs[f"label-{label}"] = output_image
 
     return outputs
+
+def fs_generate_template():
+    template = ""
+    transforms = []
+    return template, transforms 
