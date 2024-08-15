@@ -30,6 +30,7 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
 
     cpac_dirs = []
     sessions = []
+    debug = True
     cpac_dirs.append(os.path.join(cpac_dir, "anat"))
 
     # get list of sessions
@@ -71,53 +72,85 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
         # brain_template: desc-preproc_t1
         # skull_template: desc-head_t1
 
-        # This will generate the longitudinal template 
-        if use_fs:
-            warp_list, brain_template = fs_generate_template()
+
+        # skip converging to save time
+        if debug:
+            brain_template = "/home/c-pac_user/CMI/longitudinal/sub-0025427/temporary_brain_template.nii.gz"
+            skull_template = "/home/c-pac_user/CMI/longitudinal/sub-0025427/temporary_skull_template.nii.gz"
         else:
-            brain_template, skull_template, output_brain_list, \
-                output_skull_list, warp_list = subject_specific_template( 
-                    input_brain_list=strats_brain_dct[strat], 
-                    input_skull_list=strats_head_dct[strat],
-                    init_reg=None,
-                    avg_method=config["longitudinal_template_generation"]["average_method"],
-                    dof=config["longitudinal_template_generation"]["dof"],
-                    interp=config["longitudinal_template_generation"]["interp"],
-                    cost=config["longitudinal_template_generation"]["cost"],
-                    mat_type="matrix", #TODO: check
-                    convergence_threshold=config["longitudinal_template_generation"][
-                        "convergence_threshold"],
-                    thread_pool=config["longitudinal_template_generation"]["thread_pool"],
-                    unique_id_list=list(sessions))
+            # This will generate the longitudinal template 
+            if use_fs:
+                warp_list, brain_template = fs_generate_template()
+            else:
+                brain_template, skull_template, output_brain_list, \
+                    output_skull_list, warp_list = subject_specific_template( 
+                        input_brain_list=strats_brain_dct[strat], 
+                        input_skull_list=strats_head_dct[strat],
+                        init_reg=None,
+                        avg_method=config["longitudinal_template_generation"]["average_method"],
+                        dof=config["longitudinal_template_generation"]["dof"],
+                        interp=config["longitudinal_template_generation"]["interp"],
+                        cost=config["longitudinal_template_generation"]["cost"],
+                        mat_type="matrix", #TODO: check
+                        convergence_threshold=config["longitudinal_template_generation"][
+                            "convergence_threshold"],
+                        thread_pool=config["longitudinal_template_generation"]["thread_pool"],
+                        unique_id_list=list(sessions))
 
         # TODO: does this happen in fs command? I don't think so
         longitudinal_brain_mask = mask_longitudinal_T1w_brain(brain_template, pipe_num=subject_id)
         
+        keys_to_update = [
+            ("registration_workflows", "anatomical_registration", "T1w_template"),
+            ("registration_workflows", "anatomical_registration", "T1w_brain_template_mask"),
+            ("registration_workflows", "anatomical_registration", "T1w_brain_template"),
+            ("registration_workflows", "anatomical_registration", "registration", "FSL-FNIRT", "ref_mask"),
+            ("voxel_mirrored_homotopic_connectivity", "symmetric_registration", "T1w_template_symmetric"),
+            ("voxel_mirrored_homotopic_connectivity", "symmetric_registration", "T1w_brain_template_symmetric"),
+            ("voxel_mirrored_homotopic_connectivity", "symmetric_registration", "dilated_symmetric_brain_mask")
+        ]
+
+        for key_path in keys_to_update:
+            # Traverse the dictionary to get the current value
+            val = config
+            for key in key_path:
+                val = val[key]
+
+            # Replace values as needed
+            new_val=val
+            if '$FSLDIR' in val:
+                new_val = val.replace('$FSLDIR', "/usr/share/fsl/6.0")
+            if '${resolution_for_anat}' in val:
+                new_val = new_val.replace('${resolution_for_anat}', config["registration_workflows"]['anatomical_registration']['resolution_for_anat'])
+
+            # Now, set the new value back in the original dictionary
+            temp = config
+            for key in key_path[:-1]:
+                temp = temp[key]
+            temp[key_path[-1]] = new_val
+
         reference_head = config["registration_workflows"]["anatomical_registration"]["T1w_template"]
-        reference_mask = config["registration_workflows"]["anatomical_registration"]["T1w_brain_template_mask"] if \
-            config["registration_workflows"]["anatomical_registration"]["T1w_brain_template_mask"] else None
-        reference_brain = config["registration_workflows"]["anatomical_registration"]["T1w_brain_template"] if \
-            config["registration_workflows"]["anatomical_registration"]["T1w_brain_template"] else None
-        template_ref_mask = config["registration_workflows"]["anatomical_registration"]["registration"]["FSL_FNIRT"]["ref_mask"]
+        reference_mask = config["registration_workflows"]["anatomical_registration"]["T1w_brain_template_mask"]
+        reference_brain = config["registration_workflows"]["anatomical_registration"]["T1w_brain_template"]
+        template_ref_mask = config["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_mask"]
         reference_head_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration"]["T1w_template_symmetric"]
         brain_template_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration"]["T1w_brain_template_symmetric"]
         reference_mask_symmetric = config["voxel_mirrored_homotopic_connectivity"]["symmetric_registration"]["dilated_symmetric_brain_mask"]
 
         # lesion_mask = strat_pool.get_data("label-lesion_mask") if strat_pool.check_rpool("label-lesion_mask") else None
-
+        
         # registration - once for each session
         for session in sessions:
             # cd into session folder ?
             # TODO: pipe num
             if config["registration_workflows"]["anatomical_registration"]["run"] and \
-                config["registration_workflows"]["anatomical_registration"]["using"] == "ANTS":
+                "ANTS" in config["registration_workflows"]["anatomical_registration"]["registration"]["using"]:
                 if config["voxel_mirrored_homotopic_connectivity"]["run"]:
-                    symmetric_outputs = register_symmetric_ANTs_anat_to_template(config, input_brain=brain_template, 
+                    reg_outputs = register_symmetric_ANTs_anat_to_template(config, input_brain=brain_template, 
                                         reference_brain=brain_template_symmetric, input_head=skull_template, reference_head=reference_head_symmetric,
-                                        input_mask=longitudinal_brain_mask, reference_mask=reference_mask_symmetric,
+                                        input_mask=longitudinal_brain_mask, reference_mask=reference_mask_symmetric, pipe_num=session, 
                                         lesion_mask=None
                                     )
-                
                 reg_outputs = register_ANTs_anat_to_template(config, input_brain=brain_template, input_head=skull_template,
                         input_mask=longitudinal_brain_mask, reference_brain=reference_brain, 
                         reference_head=reference_head, reference_mask=reference_mask, 
@@ -125,25 +158,23 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
                     )
             
             # shouldn't fsl take the longitudinal mask? what
-        
             elif config["registration_workflows"]["anatomical_registration"]["run"] and \
-                (config["registration_workflows"]["anatomical_registration"]["using"] == "FSL" or 
-                config["registration_workflows"]["anatomical_registration"]["using"] == "FSL-linear"):
+                (config["registration_workflows"]["anatomical_registration"]["registration"]["using"] == "FSL" or 
+                config["registration_workflows"]["anatomical_registration"]["registration"]["using"] == "FSL-linear"):
                 if config["voxel_mirrored_homotopic_connectivity"]["run"]:
-                    symmetric_outputs = register_symmetric_FSL_anat_to_template(config, input_brain=brain_template, reference_brain=brain_template_symmetric,
+                    reg_outputs = register_symmetric_FSL_anat_to_template(config, input_brain=brain_template, reference_brain=brain_template_symmetric,
                                                                                 reference_head=reference_head_symmetric, reference_mask=reference_mask_symmetric)
                 reg_outputs = register_FSL_anat_to_template(config, input_brain=brain_template, input_head=skull_template, reference_mask=template_ref_mask)
-            if config["registration_workflows"]["anatomical_registration"].overwrite_transform["run"]:
+            if config["registration_workflows"]["anatomical_registration"]["overwrite_transform"]["run"]:
                 overwrite_transform_anat_to_template() 
             
             # tissue segmentation
             if config["segmentation"]["run"] and config["segmentation"]["tissue_segmentation"]["using"] == "FSL-FAST":
                 labels = tissue_seg_fsl_fast(config, pipe_num=session)
 
-        #TODO: symmetric
         transform = reg_outputs["from-longitudinal_to-template_mode-image_xfm"]
-    
         seg_transform = reg_outputs["from-longitudinal_to-T1w_mode-image_desc-linear_xfm"]
+        
         # begin single-session stuff again
         for session in sessions:
             brain_template = warp_longitudinal_T1w_to_template(config, pipe_num=session, input_image=brain_template, 
