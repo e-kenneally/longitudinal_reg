@@ -4,7 +4,7 @@ from longitudinal_reg.longitudinal_utils import run_command
 from longitudinal_reg.lesion import create_lesion_preproc
 
 def register_ANTs_anat_to_template(cfg, input_brain, input_head, input_mask, reference_brain, reference_head,
-    reference_mask, lesion_mask):
+    reference_mask, lesion_mask, pipe_num):
     """
     Register T1w to template with ANTs.
 
@@ -98,19 +98,19 @@ def ANTs_registration_connector(
     tmpl = "EPI" if template == "EPI" else ""
 
 
-    if cfg.registration_workflows["anatomical_registration"]["registration"]["ANTs"]["use_lesion_mask"]:
+    if cfg["registration_workflows"]["anatomical_registration"]["registration"]["ANTs"]["use_lesion_mask"]:
         fixed_image_mask = create_lesion_preproc(lesion_mask)
     else:
         fixed_image_mask = None
 
     transforms, normalized_output_brain = create_wf_calculate_ants_warp(
-        num_threads=cfg.pipeline_setup["system_config"]["num_ants_threads"],
-        reg_ants_skull=cfg["registration_workflows"]["anatomical_registration"][
+        num_threads=cfg["pipeline_setup"]["system_config"]["num_ants_threads"],
+        reg_with_skull=cfg["registration_workflows"]["anatomical_registration"][
         "reg_with_skull"], 
         moving_brain=input_brain, 
         reference_brain=reference_brain, 
         moving_skull=input_head, 
-        reference_skull=reference_head, 
+        input_reference_skull=reference_head, 
         reference_mask=reference_mask,
         moving_mask=input_mask, 
         fixed_image_mask=fixed_image_mask,
@@ -193,6 +193,8 @@ def separate_warps_list(warp_list, selection):
     return selected_warp
 
 def create_wf_calculate_ants_warp(
+        num_threads,
+        reg_with_skull,
         moving_brain,
         reference_brain,
         moving_skull,
@@ -343,16 +345,17 @@ def create_wf_calculate_ants_warp(
         moving_skull,
         input_reference_skull,
         ants_para,
+        reference_brain,
         moving_mask,
         reference_mask,
         fixed_image_mask,
         interp,
-        reg_with_skull,
-        num_threads,
-        mem_gb=2.8,
-        mem_x=(2e-7, "moving_brain", "xyz"),
-        throttle=True)
-    
+        reg_with_skull
+        )
+    #     num_threads,
+    #     mem_gb=2.8,
+    #     mem_x=(2e-7, "moving_brain", "xyz"),
+    #     throttle=True
     #TODO: threads
     
     ants_initial_xfm = separate_warps_list(warp_list, "Initial")
@@ -376,6 +379,7 @@ def hardcoded_reg(
     moving_skull,
     reference_skull,
     ants_para,
+    reference_brain,
     moving_mask=None,
     reference_mask=None,
     fixed_image_mask=None,
@@ -1004,8 +1008,8 @@ def FSL_registration_connector(input_brain, reference_brain, input_head, referen
             f"from-{orig}_to-{sym}{tmpl}template_mode-image_xfm": write_lin_composite_xfm
         })
 
-    if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
-            == cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
+    if (cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
+            == cfg["registration_workflows"]["anatomical_registration"]["resolution_for_anat"]):
             fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg(f"anat_mni_fnirt_register{symm}")
     else:
         fnirt_reg_anat_mni = create_fsl_fnirt_nonlinear_reg_nhp(f"anat_mni_fnirt_register{symm}")
@@ -1026,8 +1030,8 @@ def FSL_registration_connector(input_brain, reference_brain, input_head, referen
         f"from-{orig}_to-{sym}{tmpl}template_mode-image_xfm": fnirt_out_warp
     }
     
-    if (cfg.registration_workflows["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
-        != cfg.registration_workflows["anatomical_registration"]["resolution_for_anat"]):
+    if (cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["ref_resolution"]
+        != cfg["registration_workflows"]["anatomical_registration"]["resolution_for_anat"]):
         added_outputs.update({
             f"space-{sym}template_desc-head_{orig}": fnirt_out_brain,  # assuming a head output is also generated
             f"space-{sym}template_desc-{orig}_mask": reference_mask,  # similarly assuming a mask output
@@ -1246,7 +1250,7 @@ def run_c4d(input_name, output_name):
     return output1, output2, output3
 
 def register_symmetric_ANTs_anat_to_template(cfg, input_brain, reference_brain, input_head, reference_head, input_mask,
-                                             reference_mask, lesion_mask=None):
+                                             reference_mask, pipe_num,lesion_mask=None):
     
     """Register T1 to symmetric template with ANTs."""
     params = cfg["registration_workflows"]["anatomical_registration"]["registration"]["ANTs"]["T1_registration"]
@@ -1257,27 +1261,11 @@ def register_symmetric_ANTs_anat_to_template(cfg, input_brain, reference_brain, 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # Build the ANTs registration command
-
-    #TODO: params ? interpolation??
-    command = (
-        f"antsRegistration "
-        f"-d 3 "
-        f"-r [ {reference_brain} , {input_brain} , 1 ] "
-        f"-m MI[ {reference_brain} , {input_brain} , 1 , 32 ] "
-        f"-t SyN[ 0.1, 3, 0 ] "
-        f"-c [ 100x70x50x20, 1e-8, 10 ] "
-        f"-s 4x2x1x0 "
-        f"-f 8x4x2x1 "
-        f"-u 1 "
-        f"-z 1 "
-        f"-o [ {output_dir}/transform_, {output_dir}/output.nii.gz ] "
-        f"-x {input_mask} "
-        f"-v"
+    outputs = ANTs_registration_connector(
+        cfg, params, input_brain, reference_brain, input_head, reference_head, input_mask, reference_mask, 
+        lesion_mask, interpolation, orig="T1w"
     )
 
-    # Run the ANTs registration
-    run_command(command)
     
     # Handle output renaming if necessary
     outputs = {
@@ -1298,7 +1286,8 @@ def register_symmetric_ANTs_anat_to_template(cfg, input_brain, reference_brain, 
 
     return outputs
 
-def register_symmetric_FSL_anat_to_template(cfg, ):
+def register_symmetric_FSL_anat_to_template(cfg, input_brain, reference_brain, reference_head, 
+                                            reference_mask, pipe_num):
     """Register T1w to symmetric template with FSL."""
    
    # Get FSL parameters
@@ -1306,7 +1295,7 @@ def register_symmetric_FSL_anat_to_template(cfg, ):
     fnirt_config = cfg["registration_workflows"]["anatomical_registration"]["registration"]["FSL-FNIRT"]["fnirt_config"]
 
     # Output directory and files
-    output_dir = f"register_{opt}_anat_to_template_symmetric_{pipe_num}"
+    output_dir = f"register_anat_to_template_symmetric_{pipe_num}"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
