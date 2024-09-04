@@ -135,7 +135,7 @@ def template_convergence(
         msg = f"template_convergence: matrix type {mat_type} does not exist"
         raise ValueError(msg)
     distance = norm_transformations(translation, oth_transform)
-    print("distance = %s", abs(distance))
+    print("distance = ", abs(distance))
 
     return abs(distance) <= convergence_threshold
 
@@ -623,9 +623,16 @@ def register_img_list(
 
 def run_command(cmd):
     """Run a shell command and handle errors."""
+
+    output_file = os.path.join(os.getcwd(), 'commands.txt')
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Command failed with error: {result.stderr}")
+    
+    # Log commands for debugging
+    with open(output_file, 'a') as f:
+        f.write(f"Command: {cmd}\n")
+        f.write("="*80 + "\n")
     return result.stdout
 
 def apply_transform(name, reg_tool, time_series=False, num_cpus=1, num_ants_cores=1):

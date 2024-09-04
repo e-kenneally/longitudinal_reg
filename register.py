@@ -138,9 +138,6 @@ def ANTs_registration_connector(
     all_transforms = transforms[:4]  # Includes Initial, Rigid, Affine, Warp
     checked_all_transforms, _ = check_transforms(all_transforms)
 
-    # Generate inv transform flags
-    inverse_transform_flags = generate_inverse_transform_flags(checked_inverse_transforms)
-
     # Gather outputs
     output_image_linear = f"from-{orig}_to-{sym}{tmpl}template_mode-image_desc-linear_xfm.nii.gz"
     output_image_nonlinear = f"from-{orig}_to-{sym}{tmpl}template_mode-image_desc-nonlinear_xfm.nii.gz"
@@ -172,13 +169,21 @@ def apply_transforms(input_image, reference_image, output_image, transforms, int
         '-i', input_image,  # Input image
         '-r', reference_image,  # Reference image
         '-o', output_image,  # Output image
-        '-t'
-    ] + transforms  # List of transforms
+        '-n', interpolation
+    ] 
+    inverse_transform_flags = generate_inverse_transform_flags(transforms)
+    
+    # throw error if mismatched sizes
+    if not len(transforms) == len(inverse_transform_flags):
+        raise Exception(f"There are {len(transforms)} transforms and  \
+                        {len(inverse_transform_flags)} inv transform flags.")
+    for transform, can_invert in zip(transforms, inverse_transform_flags):
+        if invert and can_invert:
+            transform_cmd += ['-t', f"[ {transform} , 1 ]"] 
+        else:
+            transform_cmd += ['-t', transform]
 
-    if invert:
-        transform_cmd += ['--invert-transform-flags'] + ['1'] * len(transforms)
-
-    transform_cmd += ['-n', interpolation]
+    print("Running command:", " ".join(transform_cmd))
     run_command(transform_cmd)
 
 def separate_warps_list(warp_list, selection):
@@ -364,15 +369,9 @@ def create_wf_calculate_ants_warp(
     warp_field = separate_warps_list(warp_list, "Warp")
     inverse_warp_field = separate_warps_list(warp_list, "Inverse")
 
-    
-    return (ants_initial_xfm,
-        ants_rigid_xfm,
-        ants_affine_xfm,
-        warp_field,
-        inverse_warp_field,
-        composite_transform,
-        wait,
-        normalized_output_brain)
+    transforms = [ants_initial_xfm, ants_rigid_xfm, ants_affine_xfm, warp_field]
+    return (transforms, 
+        inverse_warp_field)
 
 def hardcoded_reg(
     moving_brain,
@@ -916,6 +915,8 @@ def generate_inverse_transform_flags(transform_list):
         if "Affine" in transform:
             inverse_transform_flags.append(True)
         if "InverseWarp" in transform:
+            inverse_transform_flags.append(False)
+        elif "Warp" in transform:
             inverse_transform_flags.append(False)
     return inverse_transform_flags
 

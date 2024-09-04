@@ -68,7 +68,7 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
 
     for strat in strats_brain_dct.keys():
 
-        # files for reference
+        # for reference:
         # brain_template: desc-preproc_t1
         # skull_template: desc-head_t1
 
@@ -110,20 +110,18 @@ def run_workflow(config, cpac_dir, out_dir, subject_id):
             ("voxel_mirrored_homotopic_connectivity", "symmetric_registration", "dilated_symmetric_brain_mask")
         ]
 
+        # Fix up incomplete paths
         for key_path in keys_to_update:
-            # Traverse the dictionary to get the current value
             val = config
             for key in key_path:
                 val = val[key]
 
-            # Replace values as needed
             new_val=val
             if '$FSLDIR' in val:
                 new_val = val.replace('$FSLDIR', "/usr/share/fsl/6.0")
             if '${resolution_for_anat}' in val:
                 new_val = new_val.replace('${resolution_for_anat}', config["registration_workflows"]['anatomical_registration']['resolution_for_anat'])
 
-            # Now, set the new value back in the original dictionary
             temp = config
             for key in key_path[:-1]:
                 temp = temp[key]
